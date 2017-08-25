@@ -13,3 +13,5 @@
 
 /* Sent from iBuildApp */
 "mWeb_sentFromiBuildApp" = "Sent from iBuildApp";
+"mWeb_noInternetConnectionFound" = "no internet connection found";
+"mWeb_loading" = "loading...";

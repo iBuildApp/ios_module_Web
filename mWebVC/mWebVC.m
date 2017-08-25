@@ -22,12 +22,20 @@
 #import <uiwidgets/uiwidgets.h>
 #import <uiwidgets/uihboxlayout.h>
 
+#import "appconfig.h"
+#import "notifications.h"
+
+#import "iphNavBarCustomization.h"
 
 #define webNavBarWidth             300.f
 #define webNavBarHeight            44.f
 #define webNavBarVerticalPadding   4.f
 #define webNavBarHorizontalPadding 10.f
 
+#define kContentTypeOfCustomResponse @"Content-Type"
+
+#define kmWebCachePath @"mWebCache"
+#define mWebCache @"ebook.cache"
 
 @implementation TWebView
 @synthesize centerOnPage;
@@ -38,6 +46,7 @@
   if ( self )
   {
     self.centerOnPage = NO;
+    
   }
   
   return self;
@@ -74,13 +83,28 @@ static UIView *currentView;
   int starts, stops;
   UILabel *label;
 }
+
 @property(nonatomic, strong) UIButton *tbButton;
 @property(nonatomic, strong) UIButton *bButton;
 @property(nonatomic, strong) UIButton *fButton;
 @property(nonatomic, strong) UIButton *srButton;
 @property(nonatomic, strong) UIView   *tbView;
 @property(nonatomic, assign) UIInterfaceOrientation supportedOrientation;
-@property(nonatomic, assign) BOOL     tabBarIsHidden;
+@property(nonatomic, strong) UIBarButtonItem *barItem;
+
+//Properties for loading data from cache
+//Binary data mimeType for webView initialization
+@property (nonatomic, strong) NSString *mimeTypeForData;
+//Binary data encoding for webView initialization
+@property (nonatomic, strong) NSString *encodingForData;
+// Reachability property
+@property (nonatomic, assign) BOOL internetReachableBoolean;
+// Array to save data from current request
+@property (nonatomic, strong) NSMutableData *currentReceivedData;
+//
+@property (nonatomic, strong) NSURLConnection *requestConnection;
+
+@property (nonatomic, strong) UIWebView *downloadIndicatorView;
 
 /**
  *  Internet reachability
@@ -94,6 +118,7 @@ static UIView *currentView;
 @end
 
 @implementation mWebVCViewController
+
 @synthesize tbButton=tbButton, srButton, fButton, bButton;
 @synthesize internetReachable = _internetReachable;
 @synthesize bInet;
@@ -103,6 +128,15 @@ static UIView *currentView;
 @synthesize URL;
 @synthesize content;
 @synthesize code;
+
+@synthesize customRequest;
+@synthesize mimeTypeForData;
+@synthesize encodingForData;
+@synthesize internetReachableBoolean;
+@synthesize currentReceivedData;
+@synthesize requestConnection;
+@synthesize downloadIndicatorView;
+
 @synthesize baseURL;
 @synthesize widgetType;
 @synthesize showLink;
@@ -114,7 +148,6 @@ static UIView *currentView;
 @synthesize supportedOrientation;
 @synthesize reloadOnceWhenAppear;
 @synthesize bNeedsReloadWhenAppear;
-@synthesize showTabBar, tabBarIsHidden;
 
 @synthesize behaviour = _behaviour;
 
@@ -132,7 +165,7 @@ static UIView *currentView;
   TBXMLElement element;
   [xmlElement_ getValue:&element];
 
-  NSMutableArray *contentArray = [[[NSMutableArray alloc] init] autorelease];
+  NSMutableArray *contentArray = [[NSMutableArray alloc] init];
 
   NSString *szTitle = @"";
   TBXMLElement *titleElement = [TBXML childElementNamed:@"title" parentElement:&element];
@@ -199,10 +232,12 @@ static UIView *currentView;
       // 1. The first element of the array is a dictionary with title
     [self.navigationItem setTitle:[[paramList objectAtIndex:0] objectForKey:@"title"]];
     self.widgetType = [params objectForKey:@"widgetType"];
-    
+      NSLog (@"%@", widgetType);
     self.content = nil;
     self.appName = nil;
     self.URL     = nil;
+    self.customRequest    = nil;
+
     self.baseURL = [NSURL URLWithString:@""]; // URL scheme by default (http://)
     self.appName    = [params objectForKey:@"appName"];
     
@@ -211,13 +246,17 @@ static UIView *currentView;
     self.URL        = [[paramList lastObject] objectForKey:@"src"];
     self.content    = [[paramList lastObject] objectForKey:@"content"];
     self.code       = [[paramList lastObject] objectForKey:@"code"];
-    
-    if ( self.URL && [self.URL length] )
+      NSLog (@"%@", URL);
+      if ( self.URL && [self.URL length] )
       self.scalable   = YES;
+    
+    if ( self.customRequest )
+       self.scalable   = YES;
     
     self.scalesPageToFitOnNextStep = YES;
   }
 }
+
 
 - (NSString*)getWidgetTitle
 {
@@ -225,7 +264,7 @@ static UIView *currentView;
     return @"HTML";
   if ( [self.widgetType isEqualToString:@"Html"] )
     return @"HTML";
-  else if ( [self.widgetType isEqualToString:@"Calendar"] )
+  else if ( [self.widgetType isEqualToString:@"calendar"] )
     return @"Calendar";
   else if ( [self.widgetType isEqualToString:@"googleform"] )
     return @"GoogleForm";
@@ -247,6 +286,15 @@ static UIView *currentView;
     self.baseURL    = [NSURL URLWithString:@""];
     self.content    = nil;
     self.URL        = nil;
+    
+    self.customRequest = nil;
+    self.mimeTypeForData = nil;
+    self.encodingForData = nil;
+    self.internetReachableBoolean = NO;
+    self.currentReceivedData = nil;
+    self.requestConnection = nil;
+    self.downloadIndicatorView = nil;
+    
     self.tbButton   = nil;
     self.srButton   = nil;
     self.bButton    = nil;
@@ -256,8 +304,6 @@ static UIView *currentView;
     self.reloadOnceWhenAppear      = NO;
     self.scalesPageToFitOnNextStep = NO;
     self.bNeedsReloadWhenAppear    = YES;
-    self.showTabBar                = YES;  // show tabBar by default
-    self.tabBarIsHidden            = NO;
     
     self.internetReachable = nil;
     self.behaviour         = nil;
@@ -271,40 +317,21 @@ static UIView *currentView;
 
 - (void)dealloc
 {
-  if ( observerForEnterFullscreen )
-  {
-    [[NSNotificationCenter defaultCenter] removeObserver:observerForEnterFullscreen];
-    observerForEnterFullscreen = nil;
-  }
-  if ( observerForExitFullscreen )
-  {
-    [[NSNotificationCenter defaultCenter] removeObserver:observerForExitFullscreen];
-    observerForExitFullscreen = nil;
-  }
   [[NSNotificationCenter defaultCenter] removeObserver:self];
   
-  self.appName    = nil;
-	self.URL        = nil;
-  self.widgetType = nil;
-  self.content    = nil;
-  self.baseURL    = nil;
-  self.tbButton   = nil;
-  self.srButton   = nil;
-  self.bButton    = nil;
-  self.fButton    = nil;
-  self.tbView     = nil;
-  self.code       = nil;
   
-  self.behaviour = nil;
+  self.internetReachableBoolean = NO;
+  
+  
   
   [self.internetReachable stopNotifier];
-  self.internetReachable = nil;
   
   webView.delegate = nil;
   self.webView.delegate = nil;
   [self.webView stopLoading];
-  self.webView = nil;
-  [super dealloc];
+  
+  
+  
 }
 
 #pragma mark -
@@ -313,6 +340,36 @@ static UIView *currentView;
 - (void)viewDidLoad
 {
   [super viewDidLoad];
+  
+  if(_colorSkin)
+  {
+    [iphNavBarCustomization setNavBarSettingsWhenViewDidLoadWithController:self];
+  }
+  
+  [[self.tabBarController tabBar] setHidden:YES];
+
+  NSString *loadingMessage = NSBundleLocalizedString(@"mWeb_loading", @"loading");
+  
+  NSString *loadingContent = @"";
+  
+  NSString *path = [[[NSBundle mainBundle] resourcePath] stringByAppendingPathComponent:resourceFromBundle(@"loading.gif")];
+  
+  
+  NSURL *imgURL = [[NSURL alloc] initFileURLWithPath:path];
+  NSString *imagePart = [NSString  stringWithFormat:@"<div style = \"text-align: center;\"><img src=\"%@\"  style=\"margin-top: %@px;\"></div>",imgURL, @"130"];
+  
+  loadingContent = [loadingContent stringByAppendingString:imagePart];
+  
+  NSString *textFontSize = @"16";
+  NSString *textFontFamily = @"Helvetica";
+  NSString *textPart = [NSString stringWithFormat:@"<div style = \"color: #999; font-size: %@pt; text-align: center; vertical-align: top; margin-left: 15px; margin-right: 15px; margin-top: 30px; white-space: nowrap; font-family: %@; \">%@</div>",textFontSize, textFontFamily, loadingMessage];
+  
+  loadingContent = [loadingContent  stringByAppendingString:textPart];
+  
+  self.downloadIndicatorView = [[UIWebView alloc] initWithFrame:self.view.bounds];
+  [self.downloadIndicatorView loadHTMLString:loadingContent
+                       baseURL:[NSURL URLWithString:@""]];
+
   self.navigationController.navigationBar.translucent = NO;
   self.navigationController.navigationBar.barStyle = UIBarStyleBlack;
   
@@ -331,49 +388,49 @@ static UIView *currentView;
                                            selector:@selector(checkNetworkStatus:)
                                                name:kReachabilityChangedNotification
                                              object:nil];
-  
-  
-  observerForExitFullscreen = [[NSNotificationCenter defaultCenter]
-                               addObserverForName:@"UIMoviePlayerControllerWillExitFullscreenNotification"
-                               object:nil
-                               queue:nil
-                               usingBlock:^(NSNotification *note) {
-
-                                 if (isVideoAlreadyDisplayed && self.navigationController.view == currentView)
-                                 {
-                                   self.navigationController.view.hidden = false;
-                                   isVideoAlreadyDisplayed = NO;
-                                 }
-                               }];
-  
-  observerForEnterFullscreen = [[NSNotificationCenter defaultCenter]
-                                addObserverForName:@"UIMoviePlayerControllerDidEnterFullscreenNotification"
-                                object:nil
-                                queue:nil
-                                usingBlock:^(NSNotification *note) {
-                                  
-                                  if (!isVideoAlreadyDisplayed && !self.navigationController.view.hidden) {
-                                    self.navigationController.view.hidden = true;
-                                    isVideoAlreadyDisplayed = YES;
-                                    currentView = self.navigationController.view;
-                                  }
-                                }];
+  [[NSNotificationCenter defaultCenter]
+    addObserver:self
+       selector:@selector(OnUIMoviePlayerControllerWillExitFullscreenNotification:)
+           name:@"UIMoviePlayerControllerWillExitFullscreenNotification"
+         object:nil];
+  [[NSNotificationCenter defaultCenter]
+    addObserver:self
+       selector:@selector(OnUIMoviePlayerControllerDidEnterFullscreenNotification:)
+           name:@"UIMoviePlayerControllerDidEnterFullscreenNotification"
+         object:nil];
   self.withoutTBar = YES;
   self.showTBarOnNextStep = YES;
+
+}
+
+- (void)OnUIMoviePlayerControllerWillExitFullscreenNotification:(NSNotification *)note {
+  if (isVideoAlreadyDisplayed && self.navigationController.view == currentView)
+  {
+    self.navigationController.view.hidden = false;
+    isVideoAlreadyDisplayed = NO;
+  }
+}
+
+- (void)OnUIMoviePlayerControllerDidEnterFullscreenNotification:(NSNotification *)note {
+  self.navigationController.view.hidden = true;
+  isVideoAlreadyDisplayed = YES;
+  currentView = self.navigationController.view;
 }
 
 - (void)viewWillAppear:(BOOL)animated
 {
   [super viewWillAppear:animated];
+  
+  if(_colorSkin)
+  {
+    [iphNavBarCustomization customizeNavBarWithController:self colorskinModel:_colorSkin];
+  }
+  
   [self.navigationItem setHidesBackButton:NO animated:NO];
   [self.navigationController setNavigationBarHidden:NO animated:animated];
   [[self.navigationController navigationBar] setBarStyle:UIBarStyleDefault];
   [[self.navigationController navigationBar] setOpaque  :YES];
   [[self.navigationController navigationBar] setAlpha   :1.f];
-  
-    // before hiding / displaying tabBar we must remember its previous state
-  self.tabBarIsHidden = [[self.tabBarController tabBar] isHidden];
-  [[self.tabBarController tabBar] setHidden:!self.showTabBar];
   
   if ( self.bNeedsReloadWhenAppear )
     [self reload];
@@ -385,16 +442,24 @@ static UIView *currentView;
 
 - (void)viewWillDisappear:(BOOL)animated
 {
+  if(_colorSkin)
+  {
+    [iphNavBarCustomization restoreNavBarWithController:self colorskinModel:_colorSkin];
+  }
+  
   [super viewWillDisappear:animated];
   
-    // restore tabBar state
-  [[self.tabBarController tabBar] setHidden:self.tabBarIsHidden];
-  
   if ( !withoutTBar ) {
-    [self.tbButton removeFromSuperview];
-    self.tbButton = nil;
+    [self hideTBButton];
   }
+  
+  [self.requestConnection cancel];
   [self.webView stopLoading];
+
+  self.customRequest = nil;
+  self.mimeTypeForData = nil;
+  self.encodingForData = nil;
+  self.currentReceivedData = nil;
 }
 
 - (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)interfaceOrientation
@@ -407,7 +472,7 @@ static UIView *currentView;
   return YES;
 }
 
-- (NSUInteger)supportedInterfaceOrientations
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations
 {
   return self.supportedOrientation;
 }
@@ -424,6 +489,16 @@ static UIView *currentView;
 shouldStartLoadWithRequest:(NSURLRequest *)request
             navigationType:(UIWebViewNavigationType)navigationType
 {
+  // Non-web links sometimes cannot be opened in UIWebView since iOS 10 due to some restrictions,
+  // but can via [UIApplication openURL:]. See the description of [U=IApplication canOpenURL:].
+  NSArray *supportedSchemes = @[@"http", @"https", @"file"];
+  if (![supportedSchemes containsObject:request.URL.scheme])
+  {
+     // [[UIApplication sharedApplication] canOpenURL:request.URL];
+    [[UIApplication sharedApplication] openURL:request.URL];
+    return NO;
+  }
+
     // fix for google form: don't change webview settings when user clicks on links
   if ([self.widgetType isEqualToString:@"googleform"])
   {
@@ -451,8 +526,8 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
     NSString *szLink = [request.URL absoluteString];
     if ( [request.HTTPBody length] )
     {
-      NSString *str = [[[NSString alloc] initWithData:request.HTTPBody
-                                             encoding:NSUTF8StringEncoding] autorelease];
+      NSString *str = [[NSString alloc] initWithData:request.HTTPBody
+                                             encoding:NSUTF8StringEncoding];
       szLink = [szLink stringByAppendingFormat:@"?%@", str ];
       szLink = [szLink stringByAppendingString:@"&bn=ibuildapp_SP"];
     }
@@ -485,8 +560,7 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
     [self.webView setScalesPageToFit:YES];
   }
   
-  if ( ( loadsCount == 0 )
-      && ((navigationType == UIWebViewNavigationTypeLinkClicked) || (navigationType == UIWebViewNavigationTypeFormSubmitted)) )
+  if ( loadsCount == 0 )
   {
     loadsCount++;
   }
@@ -503,7 +577,7 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
           didFinishWithResult:(MFMailComposeResult)composeResult
                         error:(NSError *)error
 {
-  [self dismissModalViewControllerAnimated:YES];
+  [self dismissViewControllerAnimated:YES completion:nil];
 }
 
 
@@ -511,6 +585,8 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
 {
   starts++;
   [[UIApplication sharedApplication] setNetworkActivityIndicatorVisible:YES];
+  if(self.customRequest)
+    [self showDownloadIndicator];
 }
 
 - (void)webViewDidFinishLoad:(UIWebView *)_webView
@@ -631,6 +707,9 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
 
 - (void)stopLoadingIndication
 {
+  if(self.customRequest)
+    [self hideDownloadIndicator];
+  
   [[UIApplication sharedApplication] setNetworkActivityIndicatorVisible:NO];
   [self.srButton setImage:[UIImage imageNamed:resourceFromBundle(@"mWebVC_reload")] forState:UIControlStateNormal];
 }
@@ -648,8 +727,8 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
   
   TNavigationBar *navBar = (TNavigationBar *)self.navigationController.navigationBar;
   uiRootWidget *pRootWidget = [[navBar subviews] objectAtIndex:0];
-  NSMutableArray *widgets = [[[NSMutableArray alloc] initWithArray:pRootWidget.layout.subWidgets copyItems:YES] autorelease];
-  uiWidgetData *wd = [[[uiWidgetData alloc] init] autorelease];
+  NSMutableArray *widgets = [[NSMutableArray alloc] initWithArray:pRootWidget.layout.subWidgets copyItems:YES];
+  uiWidgetData *wd = [[uiWidgetData alloc] init];
   wd.type = @"WebViewNavigationButton";
   wd.view = button_;
   wd.size = button_.frame.size;
@@ -667,57 +746,70 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
 
 - (void) showTBButton
 {
-  if (!withoutTBar && !self.tbButton)
-  {
-    self.tbButton = [UIButton buttonWithType:UIButtonTypeCustom];
-    
-    self.tbButton.frame = CGRectMake(0, 0, 36.f, 28.f);
-    
-    self.tbButton.autoresizesSubviews = YES;
-    self.tbButton.autoresizingMask    = UIViewAutoresizingFlexibleLeftMargin |
-                                        UIViewAutoresizingFlexibleTopMargin  |
-                                        UIViewAutoresizingFlexibleBottomMargin;
-    
-    if([[[UIDevice currentDevice] systemVersion] compare:@"7.0" options:NSNumericSearch] != NSOrderedAscending)
-    {
-      [self.tbButton setImage:[UIImage imageNamed:resourceFromBundle(@"mWebVC_arrow")] forState:UIControlStateNormal];
-    }
-    else
-    {
-      [self.tbButton setImage:[UIImage imageNamed:resourceFromBundle(@"mWebVC_aup")] forState:UIControlStateNormal];
-      
-      [self.tbButton setBackgroundColor:[UIColor blackColor]];
-      
-      [self.tbButton layer].cornerRadius = 4.0f;
-      [self.tbButton layer].borderWidth  = 1.0f;
-    }
-    
-    [self.tbButton layer].borderColor  = [UIColor whiteColor].CGColor;
-    
-    [self.tbButton addTarget:self
-                      action:@selector(show_hide_TBar)
-            forControlEvents:UIControlEventTouchUpInside];
-    
-      // if application is running on smartphone, we'll add navigation button on the top right of navigation bar (as custom rightBarButton)
-    if ( UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone )
-    {
-      UIBarButtonItem *barItem = [[[UIBarButtonItem alloc] initWithCustomView:self.tbButton] autorelease];
-      [self.navigationItem setRightBarButtonItem:barItem animated:YES];
-    }else
-    {
-        // application is running on iPad. Add button to navigation panel
-      [self installNavigationButton:self.tbButton];
-    }
-  }
+//  if (!withoutTBar && !self.tbButton)
+//  {
+//    self.tbButton = [UIButton buttonWithType:UIButtonTypeCustom];
+//    
+//    self.tbButton.frame = CGRectMake(0, 0, 36.f, 28.f);
+//    
+//    self.tbButton.autoresizesSubviews = YES;
+//    self.tbButton.autoresizingMask    = UIViewAutoresizingFlexibleLeftMargin |
+//    UIViewAutoresizingFlexibleTopMargin  |
+//    UIViewAutoresizingFlexibleBottomMargin;
+//    
+//    if([[[UIDevice currentDevice] systemVersion] compare:@"7.0" options:NSNumericSearch] != NSOrderedAscending)
+//    {
+//      [self.tbButton setImage:[UIImage imageNamed:resourceFromBundle(@"mWebVC_arrow")] forState:UIControlStateNormal];
+//    }
+//    else
+//    {
+//      [self.tbButton setImage:[UIImage imageNamed:resourceFromBundle(@"mWebVC_aup")] forState:UIControlStateNormal];
+//      
+//      [self.tbButton setBackgroundColor:[UIColor blackColor]];
+//      
+//      [self.tbButton layer].cornerRadius = 4.0f;
+//      [self.tbButton layer].borderWidth  = 1.0f;
+//    }
+//    
+//    [self.tbButton layer].borderColor  = [UIColor whiteColor].CGColor;
+//    
+//    [self.tbButton addTarget:self
+//                      action:@selector(show_hide_TBar)
+//            forControlEvents:UIControlEventTouchUpInside];
+//    
+//    // if application is running on smartphone, we'll add navigation button on the top right of navigation bar (as custom rightBarButton)
+//    if ( UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone )
+//    {
+//      //respect the hamburger case
+//        NSMutableArray *rightBarButtonItems = [self.navigationItem.rightBarButtonItems mutableCopy];
+//      
+//      [rightBarButtonItems removeObject:self.barItem];
+//
+//      if(!rightBarButtonItems)
+//      {
+//        rightBarButtonItems = [NSMutableArray array];
+//      }
+//      
+//      self.barItem = [[UIBarButtonItem alloc] initWithCustomView:self.tbButton];
+//      
+//      [rightBarButtonItems addObject:self.barItem];
+//      
+//      [self.navigationItem setRightBarButtonItems:rightBarButtonItems animated:NO];
+//    }else
+//    {
+//      // application is running on iPad. Add button to navigation panel
+//      [self installNavigationButton:self.tbButton];
+//    }
+//  }
 }
 
 - (void)hideTBButton
 {
-  if ( self.tbButton )
-  {
-    [self.tbButton removeFromSuperview];
-    self.tbButton = nil;
-  }
+//  if ( self.tbButton )
+//  {
+//    [self.tbButton removeFromSuperview];
+//    self.tbButton = nil;
+//  }
 }
 
 - (void)show_hide_TBar
@@ -738,7 +830,7 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
   [self.srButton removeFromSuperview];
   [self.fButton  removeFromSuperview];
   
-  self.tbView = [[[UIView alloc] init] autorelease];
+  self.tbView = [[UIView alloc] init];
   
   [self.tbView setBackgroundColor:[UIColor blackColor]];
   [self.tbView setAlpha:0.7f];
@@ -803,17 +895,15 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
 
 - (void)hideTBar
 {
-  [UIView beginAnimations:nil context:nil];
-  [UIView setAnimationDuration:0.5f];
-  
-  [self.tbView setFrame:CGRectMake( self.view.bounds.size.width, webNavBarVerticalPadding, webNavBarWidth, webNavBarHeight )];
-  self.tbView.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-  
-  [self.tbButton setTransform:CGAffineTransformMakeRotation(0)];
-  [UIView commitAnimations];
-  [self.view bringSubviewToFront:self.tbButton];
-  
-  TBarHidden = YES;
+  [UIView animateWithDuration:0.5f animations:^{
+    [self.tbView setFrame:CGRectMake( self.view.bounds.size.width, webNavBarVerticalPadding, webNavBarWidth, webNavBarHeight )];
+    self.tbView.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    
+    [self.tbButton setTransform:CGAffineTransformMakeRotation(0)];
+  } completion:^(BOOL finished) {
+    [self.view bringSubviewToFront:self.tbButton];
+    TBarHidden = YES;
+  }];
 }
 
 - (void)setInputTitle:(NSString *)inputTitle
@@ -837,23 +927,20 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
   
   if ( !self.webView )
   {
-    self.webView = [[[TWebView alloc] initWithFrame:self.view.bounds] autorelease];
+    self.webView = [[TWebView alloc] initWithFrame:self.view.bounds];
   }
   else
   {
+    [self.requestConnection cancel];
     [self.webView stopLoading];
     self.webView.delegate = nil;
     [self.webView removeFromSuperview];
-    self.webView = [[[TWebView alloc] initWithFrame:self.view.bounds] autorelease];
+    self.webView = [[TWebView alloc] initWithFrame:self.view.bounds];
   }
   
   [self.webView setBackgroundColor:[UIColor clearColor]];
   
-  if ( self.tbButton )
-  {
-    [self.tbButton removeFromSuperview];
-    self.tbButton = nil;
-  }
+//  [self hideTBButton];
   
   self.webView.delegate = self;
   self.webView.autoresizesSubviews = YES;
@@ -878,11 +965,11 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
     else
     {
         // show alert
-      UIAlertView *noNetwork = [[[UIAlertView alloc] initWithTitle:NSLocalizedString(@"general_cellularDataTurnedOff",@"Cellular Data is Turned off")
+      UIAlertView *noNetwork = [[UIAlertView alloc] initWithTitle:NSLocalizedString(@"general_cellularDataTurnedOff",@"Cellular Data is Turned off")
                                                            message:NSLocalizedString(@"general_cellularDataTurnOnMessage",@"Turn on cellular data or use Wi-Fi to access data")
                                                           delegate:nil
                                                  cancelButtonTitle:NSLocalizedString(@"general_defaultButtonTitleOK",@"OK")
-                                                 otherButtonTitles:nil] autorelease];
+                                                 otherButtonTitles:nil];
       [noNetwork show];
     }
   }
@@ -895,13 +982,13 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
   }
   else if ( self.code != nil )
   {
-    
-    if ([self.widgetType isEqualToString:@"googleform"])
+      //Размеры googleForm и Google Calendar
+    if ([self.widgetType isEqualToString:@"googleform"] || [self.widgetType isEqualToString:@"calendar"])
     {
       NSString *srcAttrValue = nil;
       NSError   *xmlError = nil;
-      TBXML *tbxml = [[TBXML newTBXMLWithXMLString:self.code
-                                             error:&xmlError] autorelease];
+      TBXML *tbxml = [TBXML newTBXMLWithXMLString:self.code
+                                             error:&xmlError];
       TBXMLElement *rootElement = [tbxml rootXMLElement];
       if ( rootElement && [[[TBXML elementName:rootElement] lowercaseString] isEqualToString:@"iframe"] )
       {
@@ -935,8 +1022,8 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
       NSMutableString  *htmlFrame = [NSMutableString stringWithString:@"<html><meta name=\"viewport\" content=\"width=320\"/><head></head><body style=\"margin:0; padding:0\"><div>"];
       BOOL      bHasHeight = NO;
       BOOL      bHasWidth = NO;
-      TBXML *tbxml = [[TBXML newTBXMLWithXMLString:self.code
-                                             error:&xmlError] autorelease];
+      TBXML *tbxml = [TBXML newTBXMLWithXMLString:self.code
+                                             error:&xmlError];
       TBXMLElement *rootElement = [tbxml rootXMLElement];
       if ( rootElement && [[[TBXML elementName:rootElement] lowercaseString] isEqualToString:@"iframe"] )
       {
@@ -989,9 +1076,15 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
                            baseURL:nil];
       
     }
-  
-    
   }
+  else if(self.customRequest != nil)
+  {
+    NSString *storyLink = [[self.customRequest URL] absoluteString];
+
+    // load data from cache
+    [self tryLoadDataFromCacheForLink:storyLink reachability:self.internetReachableBoolean];
+  }
+  
   [self showTBButton];
 }
 
@@ -1008,6 +1101,11 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
   NetworkStatus internetStatus = [self.internetReachable currentReachabilityStatus];
   self.bInet = internetStatus != NotReachable;
   [self.srButton setEnabled:self.bInet];
+
+  if (internetStatus == NotReachable)
+    self.internetReachableBoolean = NO;
+  else
+    self.internetReachableBoolean = YES;
 }
 
 
@@ -1032,7 +1130,12 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
   NSURL *url = [NSURL URLWithString:self.URL];
   NSString *host = [url.host lowercaseString];
   
-  self.URL = [self.URL stringByReplacingOccurrencesOfString:url.host withString:host];
+  if(host.length)
+  {
+    self.URL = [self.URL stringByReplacingOccurrencesOfString:url.host withString:host];
+  } else {
+    self.URL = url.absoluteString;
+  }
   
   NSString *szURL = [[self.URL encodedURLString]
                      stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
@@ -1058,6 +1161,226 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
   }
   
   return szURLRequest;
+}
+
+#pragma mark NSURLConnectionDelegate
+- (void)connection:(NSURLConnection *)connection didReceiveResponse:(NSURLResponse *)response {
+  
+  self.currentReceivedData = [NSMutableData data];
+  
+  self.mimeTypeForData = [response MIMEType];
+  self.encodingForData = nil;
+  
+  if ( [response isKindOfClass:[NSHTTPURLResponse class]])
+  {
+    NSDictionary *headers = [((NSHTTPURLResponse *)response) allHeaderFields];
+    
+    if([[response MIMEType] isEqualToString:@"text/html"])
+    {
+      NSString *contentType = (NSString *)[headers objectForKey: kContentTypeOfCustomResponse];
+      NSArray *contentTypeParameters = [contentType componentsSeparatedByString:@";"];
+      
+      for(int i = 0; i < contentTypeParameters.count; i++)
+      {
+        NSString *currentParameter = [contentTypeParameters[i] stringByReplacingOccurrencesOfString:@" " withString:@""];
+        
+        //if([currentParameter containsString:@"charset="])   // available in iOS >= 8.0
+        if([currentParameter rangeOfString:@"charset="].location != NSNotFound)
+        {
+          self.encodingForData = [currentParameter stringByReplacingOccurrencesOfString:@"charset=" withString:@""];
+        }
+      }
+    }
+  }
+}
+
+- (void)connectionDidFinishLoading:(NSURLConnection *)connection {
+  
+  NSURL * storyLinkUrl = [[connection originalRequest] URL];
+  NSString *cacheDataKey = [storyLinkUrl absoluteString];
+  
+  BOOL shouldCache = NO;
+  
+  NSString *hostLink = [appIBuildAppHostName() lowercaseString];
+  NSString *currentLink = [storyLinkUrl.host lowercaseString];
+  
+  // We should cache links to host only
+  if ([currentLink isEqualToString:hostLink])
+  {
+    shouldCache = YES;
+  }
+
+  NSString *resourcesServer = @"s3-website-us-east-1.amazonaws.com";
+  NSArray *hostPartsArray = [hostLink componentsSeparatedByString:@"."];
+  NSString *hostNamePart = hostLink;
+  if(hostPartsArray.count > 1)
+    hostNamePart = [hostPartsArray objectAtIndex:hostPartsArray.count - 2];
+  
+
+  BOOL isResourceOnResourcesServer =
+      [cacheDataKey rangeOfString:hostNamePart].location != NSNotFound
+       &&
+      [cacheDataKey rangeOfString:resourcesServer].location != NSNotFound;
+  
+  if(isResourceOnResourcesServer)
+  {
+    shouldCache = YES;
+  }
+  
+  if(shouldCache)
+  {
+    //saveToCache
+    NSMutableDictionary *dict = [self loadChache];
+    [dict setObject:self.currentReceivedData forKey:cacheDataKey];
+    NSString *webCachePath = [self cacheDataPath];
+    [NSKeyedArchiver archiveRootObject: dict toFile: webCachePath];    
+  }
+  
+  if(self.mimeTypeForData && [[self.mimeTypeForData lowercaseString] isEqualToString:@"application/pdf"])
+  {
+    self.webView.scalesPageToFit = YES;
+  }
+  
+  [self loadBinaryData:self.currentReceivedData mimeTipe:self.mimeTypeForData encoding:self.encodingForData];
+  
+}
+
+- (void)connection:(NSURLConnection *)connection didReceiveData:(NSData *)data {
+  
+  [self.currentReceivedData appendData:data];
+}
+
+- (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error {
+  
+  [self hideDownloadIndicator];
+  [[UIApplication sharedApplication] setNetworkActivityIndicatorVisible:NO];
+  
+  NSString *storyLink = [[[connection originalRequest] URL] absoluteString];
+
+  // load data from cache
+  [self tryLoadDataFromCacheForLink:storyLink reachability:NO];
+}
+
+- (void)tryLoadDataFromCacheForLink:(NSString *)link reachability:(BOOL)reachability{
+  
+  [self showDownloadIndicator];
+  [[UIApplication sharedApplication] setNetworkActivityIndicatorVisible:YES];
+  
+  NSData *cachedObject = nil;
+
+  NSMutableDictionary *dict = [self loadChache];
+  cachedObject = (NSData *)[dict objectForKey:link];
+  
+  if(cachedObject && [cachedObject length])
+  {
+    NSString *ext = [link substringFromIndex:link.length - 4];
+    NSString *mimeType = nil;
+    if([ext isEqualToString:@".pdf"])
+    {
+          mimeType = @"application/pdf";
+          self.webView.scalesPageToFit = YES;
+    }
+
+    [self loadBinaryData:cachedObject mimeTipe:mimeType encoding:nil];
+  }
+  else
+  {
+    if(reachability)
+    {
+      self.requestConnection = [[NSURLConnection alloc] initWithRequest: self.customRequest delegate:self];
+      [self.requestConnection start];
+    }
+    else
+    {
+      NSString *noConnectionMessage = NSBundleLocalizedString(@"mWeb_noInternetConnectionFound", @"no internet connection found");
+      
+      NSString *noConnectionMessageContent = @"";
+      
+      NSString *path = [[[NSBundle mainBundle] resourcePath] stringByAppendingPathComponent:resourceFromBundle(@"no-connection.png")];
+      
+      
+      NSURL *imgURL = [[NSURL alloc] initFileURLWithPath:path];
+      NSString *imagePart = [NSString  stringWithFormat:@"<div style = \"text-align: center;\"><img src=\"%@\"  style=\"margin-top: %@px;\"></div>",imgURL, @"130"];
+      
+      noConnectionMessageContent = [noConnectionMessageContent stringByAppendingString:imagePart];
+      
+      NSString *textFontSize = @"16";
+      NSString *textFontFamily = @"Helvetica";
+      NSString *textPart = [NSString stringWithFormat:@"<div style = \"color: #999; font-size: %@pt; text-align: center; vertical-align: top; margin-left: 15px; margin-right: 15px; margin-top: 30px; white-space: nowrap; font-family: %@; \">%@</div>",textFontSize, textFontFamily, noConnectionMessage];
+      
+      noConnectionMessageContent = [noConnectionMessageContent  stringByAppendingString:textPart];
+      
+      [self.webView loadHTMLString:noConnectionMessageContent
+                           baseURL:[NSURL URLWithString:@""]];
+      
+      [self hideDownloadIndicator];
+      [[UIApplication sharedApplication] setNetworkActivityIndicatorVisible:NO];
+    }
+  }
+}
+
+- (void) loadBinaryData:(NSData *)data mimeTipe:(NSString *)mimeTipe encoding:(NSString *)encoding{
+  
+   NSString *type = mimeTipe? mimeTipe: @"text/html";
+   NSString *textEncoding = encoding? encoding: @"utf-8";
+   [self.webView loadData:data
+                 MIMEType:type
+         textEncodingName:textEncoding
+                  baseURL:[NSURL URLWithString:@""]];
+}
+
+- (NSString *)cacheDataPath{
+  
+  NSError *error = nil;
+  NSArray *paths = NSSearchPathForDirectoriesInDomains( NSCachesDirectory, NSUserDomainMask, YES);
+  NSString *path = [[paths objectAtIndex:0] stringByAppendingPathComponent: kmWebCachePath];
+  
+  // Create cache folder for web module if not exist
+  if ( ![[NSFileManager defaultManager] fileExistsAtPath: path] )
+  {
+    [[NSFileManager defaultManager] createDirectoryAtPath: path
+                              withIntermediateDirectories: NO
+                                               attributes: nil
+                                                    error: &error];
+  }
+  NSString *result = [path stringByAppendingPathComponent: mWebCache];
+  return result;
+}
+
+- (NSMutableDictionary *)loadChache{
+  
+  NSString *webCachePath = [self cacheDataPath];
+  
+  id cacheDataObject = nil;
+  @try
+  {
+    cacheDataObject = [NSKeyedUnarchiver unarchiveObjectWithFile: webCachePath];
+  }
+  @catch (NSException *e) {}
+  
+  if(cacheDataObject == nil)
+  {
+    cacheDataObject = [NSMutableDictionary dictionary];
+  }
+  
+  return cacheDataObject;
+}
+
+-(void)hideDownloadIndicator {
+  
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+    
+    [self.downloadIndicatorView removeFromSuperview];
+    [self.view addSubview:self.webView];
+  });
+  
+}
+
+-(void)showDownloadIndicator {
+
+  [self.webView removeFromSuperview];
+  [self.view addSubview:self.downloadIndicatorView];
+
 }
 
 @end

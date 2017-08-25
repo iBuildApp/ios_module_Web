@@ -13,4 +13,5 @@
 
 /* Sent from iBuildApp */
 "mWeb_sentFromiBuildApp" = "Опубликовано через iBuildApp";
-
+"mWeb_noInternetConnectionFound" = "no internet connection found";
+"mWeb_loading" = "loading...";

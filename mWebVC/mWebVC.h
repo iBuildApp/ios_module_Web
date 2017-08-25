@@ -13,6 +13,7 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <MessageUI/MessageUI.h>
+#import "iphColorskinModel.h"
 
 /**
  *  Overloaded UIWebView for customizing content align when rotating device
@@ -23,6 +24,7 @@
  *  Align center content of the page when rotating device
  */
 @property (nonatomic, assign) BOOL    centerOnPage;
+
 @end
 
 @class mWebVCBehaviour;
@@ -34,8 +36,6 @@
 @interface mWebVCViewController : UIViewController <UIWebViewDelegate, MFMailComposeViewControllerDelegate>
 {
   BOOL TBarHidden;
-  id observerForEnterFullscreen;
-  id observerForExitFullscreen;
   int loadsCount;
   BOOL isReloading;
   
@@ -69,6 +69,11 @@
 @property (nonatomic, copy  ) NSString *code;
 
 /**
+ *  Custom request for webView initialization
+ */
+@property (nonatomic, copy  ) NSURLRequest *customRequest;
+
+/**
  *  BaseURL for NSURLRequest
  */
 @property (nonatomic, copy  ) NSURL    *baseURL;
@@ -77,11 +82,6 @@
  *  Widget type
  */
 @property (nonatomic, copy  ) NSString *widgetType;
-
-/**
- *  Module must show or hide tabbar. Default - YES
- */
-@property (nonatomic, assign) BOOL    showTabBar;
 
 /**
  *  Align center content of the page when rotating device
@@ -135,6 +135,7 @@
  */
 @property(nonatomic, assign) BOOL     bNeedsReloadWhenAppear;
 
+@property (nonatomic, strong) iphColorskinModel *colorSkin;
 
 /**
  *  BackButton on Toolbar clicked
